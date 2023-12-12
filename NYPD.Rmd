@@ -1,0 +1,519 @@
+---
+title: "NYPD Shooting Incident - Data Science as Field"
+author: "Daniel Alligood"
+date: "2023-11-21"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+                      
+library(lubridate)
+library(ggplot2)
+library(forcats)
+library(readr)
+library(tidyverse)
+library(stringr)
+library(tidyr)
+library(dplyr)
+library(tibble)
+library(modelr)
+
+```
+
+## Importing Dataset
+The NYPD uploads a publicly accessible data set documenting the number of shooting incidents since 2006. Included in this data set is the specific location, date, and time of the events. Also, the data set includes demographics about the victim and perpetrators. Using this data set we may provide useful information for both citizens and leaders of New York City. This document provides all steps of data analysis.
+
+The data was accessed by first searching the website <catalog.data.gov>. Then *NYPD Shooting Incident Data (Historic)* was queried. The corresponding CSV file was copied and read into R Studio (<https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD>).
+
+```{r data, echo=TRUE}
+NYPD <- read_csv("https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD")
+
+```
+
+## Manipulating Data
+We must first manipulate the data to allow for proper analysis. The strategy will include changing variable types for functionality, adding new columns that categorize the date and time, and adding boro population to each case. The boro population is estimated from the US census data described below. We will also remove the coordinate data to simplify analysis.
+```{r transform}
+#Reclassify multiple categorical variables as factors
+
+NYPD <- NYPD %>%
+  mutate(PERP_AGE_GROUP = as.factor(PERP_AGE_GROUP)) %>%
+  mutate(PERP_SEX = as.factor(PERP_SEX)) %>%
+  mutate(PERP_RACE = as.factor(PERP_RACE)) %>%
+  mutate(VIC_AGE_GROUP = as.factor(VIC_AGE_GROUP))%>%
+  mutate(VIC_SEX = as.factor(VIC_SEX))%>%
+  mutate(VIC_RACE = as.factor(VIC_RACE))%>%
+  mutate(JURISDICTION_CODE = as.factor(JURISDICTION_CODE)) %>%
+  mutate(LOC_CLASSFCTN_DESC = as.factor(LOC_CLASSFCTN_DESC)) %>%
+  mutate(LOC_OF_OCCUR_DESC = as.factor(LOC_OF_OCCUR_DESC))%>%
+  mutate(LOCATION_DESC = as.factor(LOCATION_DESC)) %>%
+  mutate(STATISTICAL_MURDER_FLAG = as.factor(STATISTICAL_MURDER_FLAG)) %>%
+  mutate(BORO = as.factor(BORO)) %>%
+  mutate(PRECINCT = as.factor(PRECINCT))
+
+#Change dates to date type of data
+NYPD <- NYPD %>%
+  mutate(OCCUR_DATE = mdy(OCCUR_DATE))
+
+#Remove X_COORD_CD,Y_COORD_CD, Latitude, Longitude, Lon_Lat
+NYPD <- NYPD %>%
+  select(-c(X_COORD_CD,Y_COORD_CD, Latitude, Longitude, Lon_Lat))
+
+#Add hour, month, year, and wday
+NYPD<-NYPD %>%
+  mutate(HOUR = hour(OCCUR_TIME)) %>%
+  mutate(YEAR = year(OCCUR_DATE)) %>%
+  mutate(MONTH = month(OCCUR_DATE, label=TRUE)) %>%
+  mutate(WDAY = wday(OCCUR_DATE, label=TRUE))%>%
+  mutate(DAY = day(OCCUR_DATE))
+
+#To normalize the neighborhoods by population, we will use US census data to normalize boro populations. The census data can be found via the following website.<https://data.cityofnewyork.us/City-Government/New-York-City-Population-by-Borough-1950-2040/xywu-7bv9/data>. 
+#This census data only produces population data for the years 2000, 2010, and 2020. To obtain yearly data, we will assume there is a linear relationship between the 10 year interval and extrapolate the rate to create an estimate of the population of each boro during that year. 
+#Below is the raw data extrapolated from the website.
+
+#Bronx: 1385108 (2000) -- 1446788 (2010) -- 1518998 (2020)
+#Brooklyn: 2465326 (2000) -- 2552911 (2010) -- 2648452 (2020)
+#Manhattan: 1537195 (2000) --1585873 (2010) -- 1638281 (2020)
+#Queens: 2229379 (2000) -- 2250002 (2010) -- 2330295 (2020)
+#Staten Island: 443728 (2000) -- 468730 (2010) -- 487155 (2020)
+   
+#Create intial data frames with the census data for each boro.  
+bronx_pop <- data.frame(POP2000=c(1385108),POP2010=c(1446788),POP2020=c(1518998))
+brooklyn_pop <- data.frame(POP2000=c(2465326),POP2010=c(2552911),POP2020=c(2648452))
+manhattan_pop <- data.frame(POP2000=c(1537195),POP2010=c(1585873),POP2020=c(1638281))
+queens_pop <- data.frame(POP2000=c(2229379),POP2010=c(2250002),POP2020=c(2330295))
+statisland_pop <- data.frame(POP2000=c(443728),POP2010=c(468730),POP2020=c(487155))
+
+#extrapolate yearly population estimates by assuming a linear relationship and then adding the proportional amount to the 2000 population. This process is repeated for the 2010 to 2020 interval. The 2020-2023 is forecasted based on the 2010-2020 trend.
+bronx_pop <- bronx_pop %>%
+  mutate("2000"=(POP2000+(((POP2010-POP2000)/10)*0))) %>%
+  mutate("2001"=(POP2000+(((POP2010-POP2000)/10)*1))) %>%
+  mutate("2002"=(POP2000+(((POP2010-POP2000)/10)*2))) %>%
+  mutate("2003"=(POP2000+(((POP2010-POP2000)/10)*3))) %>%
+  mutate("2004"=(POP2000+(((POP2010-POP2000)/10)*4))) %>%
+  mutate("2005"=(POP2000+(((POP2010-POP2000)/10)*5))) %>%
+  mutate("2006"=(POP2000+(((POP2010-POP2000)/10)*6))) %>%
+  mutate("2007"=(POP2000+(((POP2010-POP2000)/10)*7))) %>%
+  mutate("2008"=(POP2000+(((POP2010-POP2000)/10)*8))) %>%
+  mutate("2009"=(POP2000+(((POP2010-POP2000)/10)*9))) %>%
+  mutate("2010"=(POP2000+(((POP2010-POP2000)/10)*10))) %>%
+  mutate("2011"=(POP2010+(((POP2020-POP2010)/10)*1))) %>%
+  mutate("2012"=(POP2010+(((POP2020-POP2010)/10)*2))) %>%
+  mutate("2013"=(POP2010+(((POP2020-POP2010)/10)*3))) %>%
+  mutate("2014"=(POP2010+(((POP2020-POP2010)/10)*4))) %>%
+  mutate("2015"=(POP2010+(((POP2020-POP2010)/10)*5))) %>%
+  mutate("2016"=(POP2010+(((POP2020-POP2010)/10)*6))) %>%
+  mutate("2017"=(POP2010+(((POP2020-POP2010)/10)*7))) %>%
+  mutate("2018"=(POP2010+(((POP2020-POP2010)/10)*8))) %>%
+  mutate("2019"=(POP2010+(((POP2020-POP2010)/10)*9))) %>%
+  mutate("2020"=(POP2010+(((POP2020-POP2010)/10)*10))) %>%
+  mutate("2021"=(POP2010+(((POP2020-POP2000)/10)*11))) %>%
+  mutate("2022"=(POP2010+(((POP2020-POP2000)/10)*12))) %>%
+  mutate("2023"=(POP2010+(((POP2020-POP2000)/10)*13)))
+
+brooklyn_pop <- brooklyn_pop %>%
+  mutate("2000"=(POP2000+(((POP2010-POP2000)/10)*0))) %>%
+  mutate("2001"=(POP2000+(((POP2010-POP2000)/10)*1))) %>%
+  mutate("2002"=(POP2000+(((POP2010-POP2000)/10)*2))) %>%
+  mutate("2003"=(POP2000+(((POP2010-POP2000)/10)*3))) %>%
+  mutate("2004"=(POP2000+(((POP2010-POP2000)/10)*4))) %>%
+  mutate("2005"=(POP2000+(((POP2010-POP2000)/10)*5))) %>%
+  mutate("2006"=(POP2000+(((POP2010-POP2000)/10)*6))) %>%
+  mutate("2007"=(POP2000+(((POP2010-POP2000)/10)*7))) %>%
+  mutate("2008"=(POP2000+(((POP2010-POP2000)/10)*8))) %>%
+  mutate("2009"=(POP2000+(((POP2010-POP2000)/10)*9))) %>%
+  mutate("2010"=(POP2000+(((POP2010-POP2000)/10)*10))) %>%
+  mutate("2011"=(POP2010+(((POP2020-POP2010)/10)*1))) %>%
+  mutate("2012"=(POP2010+(((POP2020-POP2010)/10)*2))) %>%
+  mutate("2013"=(POP2010+(((POP2020-POP2010)/10)*3))) %>%
+  mutate("2014"=(POP2010+(((POP2020-POP2010)/10)*4))) %>%
+  mutate("2015"=(POP2010+(((POP2020-POP2010)/10)*5))) %>%
+  mutate("2016"=(POP2010+(((POP2020-POP2010)/10)*6))) %>%
+  mutate("2017"=(POP2010+(((POP2020-POP2010)/10)*7))) %>%
+  mutate("2018"=(POP2010+(((POP2020-POP2010)/10)*8))) %>%
+  mutate("2019"=(POP2010+(((POP2020-POP2010)/10)*9))) %>%
+  mutate("2020"=(POP2010+(((POP2020-POP2010)/10)*10))) %>%
+  mutate("2021"=(POP2010+(((POP2020-POP2000)/10)*11))) %>%
+  mutate("2022"=(POP2010+(((POP2020-POP2000)/10)*12))) %>%
+  mutate("2023"=(POP2010+(((POP2020-POP2000)/10)*13)))
+
+manhattan_pop <- manhattan_pop %>%
+  mutate("2000"=(POP2000+(((POP2010-POP2000)/10)*0))) %>%
+  mutate("2001"=(POP2000+(((POP2010-POP2000)/10)*1))) %>%
+  mutate("2002"=(POP2000+(((POP2010-POP2000)/10)*2))) %>%
+  mutate("2003"=(POP2000+(((POP2010-POP2000)/10)*3))) %>%
+  mutate("2004"=(POP2000+(((POP2010-POP2000)/10)*4))) %>%
+  mutate("2005"=(POP2000+(((POP2010-POP2000)/10)*5))) %>%
+  mutate("2006"=(POP2000+(((POP2010-POP2000)/10)*6))) %>%
+  mutate("2007"=(POP2000+(((POP2010-POP2000)/10)*7))) %>%
+  mutate("2008"=(POP2000+(((POP2010-POP2000)/10)*8))) %>%
+  mutate("2009"=(POP2000+(((POP2010-POP2000)/10)*9))) %>%
+  mutate("2010"=(POP2000+(((POP2010-POP2000)/10)*10))) %>%
+  mutate("2011"=(POP2010+(((POP2020-POP2010)/10)*1))) %>%
+  mutate("2012"=(POP2010+(((POP2020-POP2010)/10)*2))) %>%
+  mutate("2013"=(POP2010+(((POP2020-POP2010)/10)*3))) %>%
+  mutate("2014"=(POP2010+(((POP2020-POP2010)/10)*4))) %>%
+  mutate("2015"=(POP2010+(((POP2020-POP2010)/10)*5))) %>%
+  mutate("2016"=(POP2010+(((POP2020-POP2010)/10)*6))) %>%
+  mutate("2017"=(POP2010+(((POP2020-POP2010)/10)*7))) %>%
+  mutate("2018"=(POP2010+(((POP2020-POP2010)/10)*8))) %>%
+  mutate("2019"=(POP2010+(((POP2020-POP2010)/10)*9))) %>%
+  mutate("2020"=(POP2010+(((POP2020-POP2010)/10)*10))) %>%
+  mutate("2021"=(POP2010+(((POP2020-POP2000)/10)*11))) %>%
+  mutate("2022"=(POP2010+(((POP2020-POP2000)/10)*12))) %>%
+  mutate("2023"=(POP2010+(((POP2020-POP2000)/10)*13)))
+
+queens_pop <- queens_pop %>%
+  mutate("2000"=(POP2000+(((POP2010-POP2000)/10)*0))) %>%
+  mutate("2001"=(POP2000+(((POP2010-POP2000)/10)*1))) %>%
+  mutate("2002"=(POP2000+(((POP2010-POP2000)/10)*2))) %>%
+  mutate("2003"=(POP2000+(((POP2010-POP2000)/10)*3))) %>%
+  mutate("2004"=(POP2000+(((POP2010-POP2000)/10)*4))) %>%
+  mutate("2005"=(POP2000+(((POP2010-POP2000)/10)*5))) %>%
+  mutate("2006"=(POP2000+(((POP2010-POP2000)/10)*6))) %>%
+  mutate("2007"=(POP2000+(((POP2010-POP2000)/10)*7))) %>%
+  mutate("2008"=(POP2000+(((POP2010-POP2000)/10)*8))) %>%
+  mutate("2009"=(POP2000+(((POP2010-POP2000)/10)*9))) %>%
+  mutate("2010"=(POP2000+(((POP2010-POP2000)/10)*10))) %>%
+  mutate("2011"=(POP2010+(((POP2020-POP2010)/10)*1))) %>%
+  mutate("2012"=(POP2010+(((POP2020-POP2010)/10)*2))) %>%
+  mutate("2013"=(POP2010+(((POP2020-POP2010)/10)*3))) %>%
+  mutate("2014"=(POP2010+(((POP2020-POP2010)/10)*4))) %>%
+  mutate("2015"=(POP2010+(((POP2020-POP2010)/10)*5))) %>%
+  mutate("2016"=(POP2010+(((POP2020-POP2010)/10)*6))) %>%
+  mutate("2017"=(POP2010+(((POP2020-POP2010)/10)*7))) %>%
+  mutate("2018"=(POP2010+(((POP2020-POP2010)/10)*8))) %>%
+  mutate("2019"=(POP2010+(((POP2020-POP2010)/10)*9))) %>%
+  mutate("2020"=(POP2010+(((POP2020-POP2010)/10)*10))) %>%
+  mutate("2021"=(POP2010+(((POP2020-POP2000)/10)*11))) %>%
+  mutate("2022"=(POP2010+(((POP2020-POP2000)/10)*12))) %>%
+  mutate("2023"=(POP2010+(((POP2020-POP2000)/10)*13)))
+
+statisland_pop <- statisland_pop %>%
+  mutate("2000"=(POP2000+(((POP2010-POP2000)/10)*0))) %>%
+  mutate("2001"=(POP2000+(((POP2010-POP2000)/10)*1))) %>%
+  mutate("2002"=(POP2000+(((POP2010-POP2000)/10)*2))) %>%
+  mutate("2003"=(POP2000+(((POP2010-POP2000)/10)*3))) %>%
+  mutate("2004"=(POP2000+(((POP2010-POP2000)/10)*4))) %>%
+  mutate("2005"=(POP2000+(((POP2010-POP2000)/10)*5))) %>%
+  mutate("2006"=(POP2000+(((POP2010-POP2000)/10)*6))) %>%
+  mutate("2007"=(POP2000+(((POP2010-POP2000)/10)*7))) %>%
+  mutate("2008"=(POP2000+(((POP2010-POP2000)/10)*8))) %>%
+  mutate("2009"=(POP2000+(((POP2010-POP2000)/10)*9))) %>%
+  mutate("2010"=(POP2000+(((POP2010-POP2000)/10)*10))) %>%
+  mutate("2011"=(POP2010+(((POP2020-POP2010)/10)*1))) %>%
+  mutate("2012"=(POP2010+(((POP2020-POP2010)/10)*2))) %>%
+  mutate("2013"=(POP2010+(((POP2020-POP2010)/10)*3))) %>%
+  mutate("2014"=(POP2010+(((POP2020-POP2010)/10)*4))) %>%
+  mutate("2015"=(POP2010+(((POP2020-POP2010)/10)*5))) %>%
+  mutate("2016"=(POP2010+(((POP2020-POP2010)/10)*6))) %>%
+  mutate("2017"=(POP2010+(((POP2020-POP2010)/10)*7))) %>%
+  mutate("2018"=(POP2010+(((POP2020-POP2010)/10)*8))) %>%
+  mutate("2019"=(POP2010+(((POP2020-POP2010)/10)*9))) %>%
+  mutate("2020"=(POP2010+(((POP2020-POP2010)/10)*10))) %>%
+  mutate("2021"=(POP2010+(((POP2020-POP2000)/10)*11))) %>%
+  mutate("2022"=(POP2010+(((POP2020-POP2000)/10)*12))) %>%
+  mutate("2023"=(POP2010+(((POP2020-POP2000)/10)*13)))
+
+#Next organize the data in a way that can be merged to the original data frame. First by transposing, then filtering out the census data, adding a year and Boro column followed by renaming the columns to equal that for the NYPD data set. 
+bronx_pop<- t(bronx_pop)
+bronx_pop <- as.data.frame(bronx_pop) 
+bronx_pop <- bronx_pop %>%
+     filter(!row_number() %in% c(1, 2, 3))
+bronx_pop <- bronx_pop %>%
+     mutate(YEAR = 2000:2023)
+bronx_pop <- bronx_pop %>%
+     mutate(BORO = 'BRONX') 
+colnames(bronx_pop)<-c("Population", "YEAR", "BORO")
+
+brooklyn_pop<- t(brooklyn_pop)
+brooklyn_pop <- as.data.frame(brooklyn_pop) 
+brooklyn_pop <- brooklyn_pop %>%
+     filter(!row_number() %in% c(1, 2, 3))
+brooklyn_pop <- brooklyn_pop %>%
+     mutate(YEAR = 2000:2023)
+brooklyn_pop <- brooklyn_pop %>%
+     mutate(BORO = 'BROOKLYN') 
+colnames(brooklyn_pop)<-c("Population", "YEAR", "BORO")
+
+manhattan_pop<- t(manhattan_pop)
+manhattan_pop <- as.data.frame(manhattan_pop) 
+manhattan_pop <- manhattan_pop %>%
+     filter(!row_number() %in% c(1, 2, 3))
+manhattan_pop <- manhattan_pop %>%
+     mutate(YEAR = 2000:2023)
+manhattan_pop <- manhattan_pop %>%
+     mutate(BORO = 'MANHATTAN') 
+colnames(manhattan_pop)<-c("Population", "YEAR", "BORO")
+
+queens_pop<- t(queens_pop)
+queens_pop <- as.data.frame(queens_pop) 
+queens_pop <- queens_pop %>%
+     filter(!row_number() %in% c(1, 2, 3))
+queens_pop <- queens_pop %>%
+     mutate(YEAR = 2000:2023)
+queens_pop <- queens_pop %>%
+     mutate(BORO = 'QUEENS') 
+colnames(queens_pop)<-c("Population", "YEAR", "BORO")
+
+statisland_pop<- t(statisland_pop)
+statisland_pop <- as.data.frame(statisland_pop) 
+statisland_pop <- statisland_pop %>%
+     filter(!row_number() %in% c(1, 2, 3))
+statisland_pop <- statisland_pop %>%
+     mutate(YEAR = 2000:2023)
+statisland_pop <- statisland_pop %>%
+     mutate(BORO = 'STATEN ISLAND') 
+colnames(statisland_pop)<-c("Population", "YEAR", "BORO")
+
+#Combine all the BORO data sets into one data frame
+population <- bind_rows(bronx_pop,brooklyn_pop,manhattan_pop,queens_pop,statisland_pop)
+
+#Merge population data with original data set sorting by YEAR and BORO.
+NYPD<-merge(NYPD,population, by=c('YEAR','BORO'))
+
+```
+
+We see there are multiple variables with empty data  However, it appears data relating to the questions of "where" and "when" are fully populated. Certain demographic data about the event is lacking. As such in this analysis we will proceed with analyzing the questions of "where" and "when".
+
+## Visualization
+Initial visualizations will start with bar graphs to understand global trends in the case data. 
+```{r visual}
+#We will start with visualizations regarding the "when" question. 
+
+NYPD %>%ggplot(aes(x=OCCUR_DATE, y=frequency(OCCUR_DATE))) +
+  geom_bar(stat="identity", width=6, fill="lightgreen") +
+  labs(title="Daily NYC shooting incidents from 2006 to 2022",
+       x="Year",y="Number of events")+
+  scale_fill_manual(values=c('black','lightgrey'))+
+  theme_classic()
+
+#There appears to be a cylindrical pattern to the yearly data.
+
+NYPD %>%ggplot(aes(x=OCCUR_TIME, y=frequency(OCCUR_TIME))) +
+  geom_bar(stat="identity", width=6, fill="darkgreen") +
+  labs(title="Timing of NYC shooting incidents",
+       x="Time",y="Number of events")+
+  scale_fill_manual(values=c('black','lightgrey'))+
+  theme_classic()
+
+#There appears to be a increase in shooting incidents overnight.
+
+#Next we will analyze the "where".. This contains complete data set, so all cases will be used in the analysis. 
+
+NYPD %>%ggplot(aes(x=BORO, y=frequency(BORO))) +
+  geom_bar(stat="identity", width=0.5, fill="lightgreen") +
+  labs(title="Total shooting events from 2006-2022 for each NYC Boro",
+       x="Boro",y="Number of events")+
+  scale_fill_manual(values=c('black','lightgrey'))+
+  theme_classic()
+
+#Brooklyn and Bronx have the most overall shooting incidents
+
+#Precinct Frequency
+NYPD %>%ggplot(aes(x=PRECINCT, y=frequency(PRECINCT))) +
+    geom_bar(stat="identity", width=0.5, fill="lightgreen") +
+    labs(title="Total shooting events from 2006-2022 in NYC for each precinct",
+         x="Precinct",y="Number of events")+
+    theme(axis.text.x = element_text(angle = 90, hjust = 0.5, vjust = 0.5, size=6))+
+    geom_col(width = 0.2, position = position_dodge(1))
+
+#Precincts 75, 73, 67, 44, 79 have the highest overall shooting incidents of the 2006 to 2022 time interval.
+
+
+```
+
+
+## Analysis
+Using the visualizations from prior section, we know there are some trends in the timing and location of the shootings. Now we will use manipulated date to further explore the questions of "when" and "where".
+```{r analysis}
+#We will first look closer at the when questions by plotting bar graphs of the hour, weekday, month and year. 
+NYPD %>%ggplot(aes(x=HOUR, y=frequency(HOUR))) +
+  geom_bar(stat="identity", width=0.5, fill="lightgreen") +
+  labs(title="Total hourly NYC shooting events from 2006-2022",
+       x="Hour",y="Number of events")+
+  scale_fill_manual(values=c('black','lightgrey'))+
+  theme_classic()
+
+NYPD %>%ggplot(aes(x=WDAY, y=frequency(WDAY))) +
+     geom_bar(stat="identity", width=0.5, fill="lightgreen") +
+     labs(title="Total daily NYC shooting events from 2006-2022",
+          x="Week Day",y="Number of Events")+
+     scale_fill_manual(values=c('black','lightgrey'))+
+     theme_classic()
+
+NYPD %>%ggplot(aes(x=MONTH, y=frequency(MONTH))) +
+     geom_bar(stat="identity", width=0.5, fill="lightgreen") +
+     labs(title="Total monthly NYC shooting events from 2006-2022",
+          x="MONTH",y="Number of events")+
+     scale_fill_manual(values=c('black','lightgrey'))+
+     theme_classic()
+
+NYPD %>%ggplot(aes(x=YEAR, y=frequency(YEAR))) +
+  geom_bar(stat="identity", width=0.5, fill="lightgreen") +
+  labs(title="Total yearly NYC shooting events from 2006-2022",
+       x="YEAR",y="Number of events")+
+  scale_fill_manual(values=c('black','lightgrey'))+
+  theme_classic()
+
+#Now we will evaluate the yearly trends in each boro and precinct
+#we will normalize the Boro cases by the extrapolated boro population.
+NYPD_mod <- NYPD %>%
+     group_by(YEAR,BORO,Population)%>%
+     summarize(cases=n())
+NYPD_mod <- NYPD_mod%>%
+  mutate(casespermil = cases*1000000/Population)
+
+ggplot(NYPD_mod, aes(YEAR, casespermil, colour=BORO)) + 
+     geom_line()+
+  labs(title="Number of NYC shooting events from 2006-2022 by Boro",
+          x="YEAR",y="Cases per million")
+
+#We will now explore the top five highest and top 5 lowest overall shooting incidents by precinct.
+NYPD_mod2 <- NYPD%>%
+  group_by(PRECINCT)%>%
+  summarize(cases=n())
+
+NYPD_mod2 %>%
+  slice_max(cases,n=5)
+NYPD_mod2 %>%
+  slice_min(cases,n=5)
+
+#Graph these precincts over the years
+precincts <- c(79,44,67,73,75,22,17,111,19,112)
+
+NYPD_mod3 <- NYPD %>%
+     group_by(YEAR,PRECINCT)%>%
+     summarize(cases=n())
+
+NYPD_mod4 <- subset(NYPD_mod3, is.element(PRECINCT, precincts))
+ggplot(NYPD_mod4, aes(YEAR, cases, colour=PRECINCT)) + 
+     geom_line()+
+  labs(title="Number of NYC shooting events 2006-2022 by precinct",
+          x="YEAR",y="Number of events")
+
+```
+
+## Modeling
+
+We will use linear models to explore the time of day and month shooting events are more likely. 
+```{r modeling}
+
+#Day model
+#Make new column with the Month and Day
+NYPD <- NYPD %>%
+     mutate(monday = make_date(year=0,month=MONTH,day=DAY))
+
+#make new data frame grouping by our new month/day column. This sums all the daily cases from each year
+NYPD_date2<- NYPD%>%
+     group_by(monday)%>%
+     summarize(cases=n())
+
+#plot the cases. 
+ggplot(NYPD_date2, aes(monday, cases))+
+     geom_line()+
+labs(title="Daily NYC shooting events for aggrated years",
+          x="Days in a year",y="Cases")
+
+#create a model based on days of a year
+mod1<-lm(cases~monday, data=NYPD_date2)
+
+#data frame containing model predictions
+grid <- NYPD_date2 %>% 
+     data_grid(monday) %>% 
+     add_predictions(mod1, "cases")
+
+#adding residuals to the 
+NYPD_date2 <- NYPD_date2 %>% 
+     add_residuals(mod1)
+
+#plot the model residuals along with smooth line
+NYPD_date2 %>% 
+     ggplot(aes(monday, resid)) + 
+     geom_ref_line(h = 0) + 
+     geom_line(colour = "grey50") + 
+     geom_smooth(se = FALSE, span = 0.20)+
+  labs(title="Residual model of shooting events in NYC for aggregated years",
+          x="Days in a year",y="Residuals")
+
+#see the summer months contain the highest amount of shooting events.
+
+#We can model the increase in cases lead to increase in deaths
+#Assume statistical murder flag denotes if the victim died.
+#create new column for deaths and change from TRUE/FALSE to 0 and 1
+NYPD_death <- NYPD%>%
+  mutate(deaths = STATISTICAL_MURDER_FLAG == TRUE)
+NYPD_death$deaths <- as.integer(as.logical(NYPD_death$deaths))
+#group the data set by date; summarize the total cases as well as count the number of deaths for each day
+NYPD_date4<- NYPD_death %>%
+  group_by(OCCUR_DATE)%>%
+  summarize(cases=n(), deaths=sum(deaths))
+#model
+mod4<- lm(deaths~cases, NYPD_date4)
+#add model predictions and residuals to data frame
+NYPD_date4 <- NYPD_date4 %>% 
+  add_predictions(mod4)%>%
+  add_residuals(mod4)
+#plot 
+NYPD_date4 %>% 
+  ggplot() +
+  geom_point(aes(x=cases, y= deaths), color="blue")+
+  geom_line(aes(x=cases, y= pred), color="red")+
+  labs(title="Model of cases vs deaths in NYC between 2006 and 2022",
+         x="Number of Cases",y="Number of Deaths")
+
+summary(mod4)
+#there is a weak trend from this model with approximatley 40% of the data being described by this trend line.
+
+#Time model
+#create new data frame based on time.
+NYPD_date3<- NYPD%>%
+     group_by(OCCUR_TIME)%>%
+     summarize(cases=n())
+#plot time vs cases
+ggplot(NYPD_date3, aes(OCCUR_TIME, cases))+
+     geom_line()+
+  labs(title="Number of shooting events 2006-2022 in NYC",
+          x="Time",y="Number of events")
+#model 
+mod2<-lm(cases~OCCUR_TIME, data=NYPD_date3)
+#data frame containing model predictions
+grid2 <- NYPD_date3 %>% 
+     data_grid(OCCUR_TIME) %>% 
+     add_predictions(mod2, "cases")
+#adding model residuals 
+NYPD_date3 <- NYPD_date3 %>% 
+     add_residuals(mod2)
+#ploting time vs residuals
+NYPD_date3 %>% 
+     ggplot(aes(OCCUR_TIME, resid)) + 
+     geom_ref_line(h = 0) + 
+     geom_line(colour = "grey50") + 
+     geom_smooth(se = FALSE, span = 0.20)+
+  labs(title="Residual Model of shooting events in NYC during 24 Hours",
+          x="Time",y="Residuals")
+#see that more shooting events occur overnight. 
+
+
+```
+
+## Conclusions
+We find some interesting results from the analysis of this data. 
+
+* Trends in total NYC shooting incident were down during the COVID pandemic. However, with relaxing restrictions, levels have increased back to pre-pandemic levels. 
+* Brooklyn and the Bronx seem to have the highest shooting incidents per million people compared to other Boros.
+* Precincts 75, 73, 67, 44, 79 have experienced the most shooting incidents (defined as total since 2006).
+* Precincts 22, 17, 111, 19, 112 have experienced the least shooting icidents (defined as total since 2006).
+* Firearm activity occurs most frequently during the hours of 23-03, the weekends, and during the summer months. 
+
+There are limitations to this analysis. Instead of using the residuals of linear models, more sophisticated modeling may have been employed to better model the data. 
+
+## Biases
+Growing up in a small town, I have a bias against larger cities as being more laden with crimes. To mitigate this bias, I am not comparing NYC to other towns. Furthermore, interacting with higher education friends from NYC, I have personal biases on the NYC neighborhoods. To mitigate these biases, I have attempted to noramlize the neighborhoods with their respective populations.
+
+## Appendix
+```{r appendix}
+sessionInfo()
+```
